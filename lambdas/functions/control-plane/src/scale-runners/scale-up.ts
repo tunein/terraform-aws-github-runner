@@ -1,5 +1,6 @@
 import { Octokit } from '@octokit/rest';
 import { addPersistentContextToChildLogger, createChildLogger } from '@terraform-aws-github-runner/aws-powertools-util';
+import { getParameter, putParameter } from '@terraform-aws-github-runner/aws-ssm-util';
 import yn from 'yn';
 
 import { createGithubAppAuth, createGithubInstallationAuth, createOctoClient } from '../gh-auth/gh-auth';
@@ -8,6 +9,17 @@ import { RunnerInputParameters } from './../aws/runners.d';
 import ScaleError from './ScaleError';
 
 const logger = createChildLogger('scale-up');
+
+export interface RunnerGroup {
+  name: string;
+  id: number;
+}
+
+interface EphemeralRunnerConfig {
+  runnerName: string;
+  runnerGroupId: number;
+  runnerLabels: string[];
+}
 
 export interface ActionRequestMessage {
   id: number;
@@ -20,16 +32,18 @@ export interface ActionRequestMessage {
 interface CreateGitHubRunnerConfig {
   ephemeral: boolean;
   ghesBaseUrl: string;
-  runnerExtraLabels: string | undefined;
-  runnerGroup: string | undefined;
+  runnerExtraLabels: string;
+  runnerGroup: string;
+  runnerNamePrefix: string;
   runnerOwner: string;
   runnerType: 'Org' | 'Repo';
   disableAutoUpdate: boolean;
+  ssmTokenPath: string;
+  ssmConfigPath: string;
 }
 
 interface CreateEC2RunnerConfig {
   environment: string;
-  ssmTokenPath: string;
   subnets: string[];
   launchTemplateName: string;
   ec2instanceCriteria: RunnerInputParameters['ec2instanceCriteria'];
@@ -45,10 +59,6 @@ function generateRunnerServiceConfig(githubRunnerConfig: CreateGitHubRunnerConfi
 
   if (githubRunnerConfig.runnerExtraLabels !== undefined) {
     config.push(`--labels ${githubRunnerConfig.runnerExtraLabels}`);
-  }
-
-  if (githubRunnerConfig.ephemeral) {
-    config.push(`--ephemeral`);
   }
 
   if (githubRunnerConfig.disableAutoUpdate) {
@@ -71,6 +81,18 @@ async function getGithubRunnerRegistrationToken(githubRunnerConfig: CreateGitHub
           repo: githubRunnerConfig.runnerOwner.split('/')[1],
         });
   return registrationToken.data.token;
+}
+
+function removeTokenForLogging(config: string[]): string[] {
+  const result: string[] = [];
+  config.forEach((e) => {
+    if (e.startsWith('--token')) {
+      result.push('--token <REDACTED>');
+    } else {
+      result.push(e);
+    }
+  });
+  return result;
 }
 
 async function getInstallationId(
@@ -116,21 +138,63 @@ async function isJobQueued(githubInstallationClient: Octokit, payload: ActionReq
   return isQueued;
 }
 
+async function getRunnerGroupId(githubRunnerConfig: CreateGitHubRunnerConfig, ghClient: Octokit): Promise<number> {
+  // if the runnerType is Repo, then runnerGroupId is default to 1
+  let runnerGroupId: number | undefined = 1;
+  if (githubRunnerConfig.runnerType === 'Org' && githubRunnerConfig.runnerGroup !== undefined) {
+    let runnerGroup: string | undefined;
+    // check if runner group id is already stored in SSM Parameter Store and
+    // use it if it exists to avoid API call to GitHub
+    try {
+      runnerGroup = await getParameter(
+        `${githubRunnerConfig.ssmConfigPath}/runner-group/${githubRunnerConfig.runnerGroup}`,
+      );
+    } catch (err) {
+      logger.warn(`SSM Parameter for Runner group ${githubRunnerConfig.runnerGroup} does not exist`);
+    }
+    if (runnerGroup === undefined) {
+      // get runner group id from GitHub
+      runnerGroupId = await GetRunnerGroupByName(ghClient, githubRunnerConfig);
+      // store runner group id in SSM
+      await putParameter(
+        `${githubRunnerConfig.ssmConfigPath}/runner-group/${githubRunnerConfig.runnerGroup}`,
+        runnerGroupId.toString(),
+        false,
+      );
+    } else {
+      runnerGroupId = parseInt(runnerGroup);
+    }
+  }
+  return runnerGroupId;
+}
+
+async function GetRunnerGroupByName(ghClient: Octokit, githubRunnerConfig: CreateGitHubRunnerConfig): Promise<number> {
+  const runnerGroups: RunnerGroup[] = await ghClient.paginate(`GET /orgs/{org}/actions/runner-groups`, {
+    org: githubRunnerConfig.runnerOwner,
+    per_page: 100,
+  });
+  const runnerGroupId = runnerGroups.find((runnerGroup) => runnerGroup.name === githubRunnerConfig.runnerGroup)?.id;
+
+  if (runnerGroupId === undefined) {
+    throw new Error(`Runner group ${githubRunnerConfig.runnerGroup} does not exist`);
+  }
+
+  return runnerGroupId;
+}
+
 export async function createRunners(
   githubRunnerConfig: CreateGitHubRunnerConfig,
   ec2RunnerConfig: CreateEC2RunnerConfig,
   ghClient: Octokit,
 ): Promise<void> {
-  const token = await getGithubRunnerRegistrationToken(githubRunnerConfig, ghClient);
-
-  const runnerServiceConfig = generateRunnerServiceConfig(githubRunnerConfig, token);
-
-  await createRunner({
-    runnerServiceConfig,
+  const instances = await createRunner({
     runnerType: githubRunnerConfig.runnerType,
     runnerOwner: githubRunnerConfig.runnerOwner,
     ...ec2RunnerConfig,
   });
+  if (instances.length !== 0) {
+    await createStartRunnerConfig(githubRunnerConfig, instances, ghClient);
+  }
 }
 
 export async function scaleUp(eventSource: string, payload: ActionRequestMessage): Promise<void> {
@@ -139,8 +203,8 @@ export async function scaleUp(eventSource: string, payload: ActionRequestMessage
   if (eventSource !== 'aws:sqs') throw Error('Cannot handle non-SQS events!');
   const enableOrgLevel = yn(process.env.ENABLE_ORGANIZATION_RUNNERS, { default: true });
   const maximumRunners = parseInt(process.env.RUNNERS_MAXIMUM_COUNT || '3');
-  const runnerExtraLabels = process.env.RUNNER_EXTRA_LABELS;
-  const runnerGroup = process.env.RUNNER_GROUP_NAME;
+  const runnerExtraLabels = process.env.RUNNER_EXTRA_LABELS || '';
+  const runnerGroup = process.env.RUNNER_GROUP_NAME || 'Default';
   const environment = process.env.ENVIRONMENT;
   const ghesBaseUrl = process.env.GHES_URL;
   const ssmTokenPath = process.env.SSM_TOKEN_PATH;
@@ -154,6 +218,8 @@ export async function scaleUp(eventSource: string, payload: ActionRequestMessage
   const instanceAllocationStrategy = process.env.INSTANCE_ALLOCATION_STRATEGY || 'lowest-price'; // same as AWS default
   const enableJobQueuedCheck = yn(process.env.ENABLE_JOB_QUEUED_CHECK, { default: true });
   const amiIdSsmParameterName = process.env.AMI_ID_SSM_PARAMETER_NAME;
+  const runnerNamePrefix = process.env.RUNNER_NAME_PREFIX || '';
+  const ssmConfigPath = process.env.SSM_CONFIG_PATH || '';
 
   if (ephemeralEnabled && payload.eventType !== 'workflow_job') {
     logger.warn(`${payload.eventType} event is not supported in combination with ephemeral runners.`);
@@ -187,7 +253,6 @@ export async function scaleUp(eventSource: string, payload: ActionRequestMessage
   const installationId = await getInstallationId(ghesApiUrl, enableOrgLevel, payload);
   const ghAuth = await createGithubInstallationAuth(installationId, ghesApiUrl);
   const githubInstallationClient = await createOctoClient(ghAuth.token, ghesApiUrl);
-
   if (!enableJobQueuedCheck || (await isJobQueued(githubInstallationClient, payload))) {
     const currentRunners = await listEC2Runners({
       environment,
@@ -205,9 +270,12 @@ export async function scaleUp(eventSource: string, payload: ActionRequestMessage
           ghesBaseUrl,
           runnerExtraLabels,
           runnerGroup,
+          runnerNamePrefix,
           runnerOwner,
           runnerType,
           disableAutoUpdate,
+          ssmTokenPath,
+          ssmConfigPath,
         },
         {
           ec2instanceCriteria: {
@@ -218,7 +286,6 @@ export async function scaleUp(eventSource: string, payload: ActionRequestMessage
           },
           environment,
           launchTemplateName,
-          ssmTokenPath,
           subnets,
           amiIdSsmParameterName,
         },
@@ -229,6 +296,92 @@ export async function scaleUp(eventSource: string, payload: ActionRequestMessage
       if (ephemeral) {
         throw new ScaleError('No runners create: maximum of runners reached.');
       }
+    }
+  }
+}
+async function createStartRunnerConfig(
+  githubRunnerConfig: CreateGitHubRunnerConfig,
+  instances: string[],
+  ghClient: Octokit,
+) {
+  if (githubRunnerConfig.ephemeral) {
+    await createStartRunnerConfigForEphemeralRunners(githubRunnerConfig, instances, ghClient);
+  } else {
+    await createStartRunnerConfigForNonEphemeralRunners(githubRunnerConfig, instances, ghClient);
+  }
+}
+
+function addDelay(instances: string[]) {
+  const delay = async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const ssmParameterStoreMaxThroughput = 40;
+  const isDelay = instances.length >= ssmParameterStoreMaxThroughput ? true : false;
+  return { isDelay, delay };
+}
+
+async function createStartRunnerConfigForNonEphemeralRunners(
+  githubRunnerConfig: CreateGitHubRunnerConfig,
+  instances: string[],
+  ghClient: Octokit,
+) {
+  const { isDelay, delay } = addDelay(instances);
+  const token = await getGithubRunnerRegistrationToken(githubRunnerConfig, ghClient);
+  let runnerServiceConfig = generateRunnerServiceConfig(githubRunnerConfig, token);
+
+  runnerServiceConfig = removeTokenForLogging(runnerServiceConfig);
+  logger.debug('Runner service config for non-ephemeral runners', { runner_service_config: runnerServiceConfig });
+
+  for (const instance of instances) {
+    await putParameter(`${githubRunnerConfig.ssmTokenPath}/${instance}`, runnerServiceConfig.join(' '), true);
+    if (isDelay) {
+      // Delay to prevent AWS ssm rate limits by being within the max throughput limit
+      await delay(25);
+    }
+  }
+}
+
+async function createStartRunnerConfigForEphemeralRunners(
+  githubRunnerConfig: CreateGitHubRunnerConfig,
+  instances: string[],
+  ghClient: Octokit,
+) {
+  const runnerGroupId = await getRunnerGroupId(githubRunnerConfig, ghClient);
+  const { isDelay, delay } = addDelay(instances);
+  const runnerLabels = githubRunnerConfig.runnerExtraLabels.split(',');
+
+  logger.debug(`Runner group id: ${runnerGroupId}`);
+  logger.debug(`Runner labels: ${runnerLabels}`);
+  for (const instance of instances) {
+    // generate jit config for runner registration
+    const ephemeralRunnerConfig: EphemeralRunnerConfig = {
+      runnerName: `${githubRunnerConfig.runnerNamePrefix}${instance}`,
+      runnerGroupId: runnerGroupId,
+      runnerLabels: runnerLabels,
+    };
+    logger.debug(`Runner name: ${ephemeralRunnerConfig.runnerName}`);
+    const runnerConfig =
+      githubRunnerConfig.runnerType === 'Org'
+        ? await ghClient.actions.generateRunnerJitconfigForOrg({
+            org: githubRunnerConfig.runnerOwner,
+            name: ephemeralRunnerConfig.runnerName,
+            runner_group_id: ephemeralRunnerConfig.runnerGroupId,
+            labels: ephemeralRunnerConfig.runnerLabels,
+          })
+        : await ghClient.actions.generateRunnerJitconfigForRepo({
+            owner: githubRunnerConfig.runnerOwner.split('/')[0],
+            repo: githubRunnerConfig.runnerOwner.split('/')[1],
+            name: ephemeralRunnerConfig.runnerName,
+            runner_group_id: ephemeralRunnerConfig.runnerGroupId,
+            labels: ephemeralRunnerConfig.runnerLabels,
+          });
+    // store jit config in ssm parameter store
+    logger.debug('Runner JIT config for ephemeral runner', {
+      runner_jit_config: runnerConfig.data.encoded_jit_config,
+      instance: instance,
+    });
+    await putParameter(`${githubRunnerConfig.ssmTokenPath}/${instance}`, runnerConfig.data.encoded_jit_config, true);
+    if (isDelay) {
+      // Delay to prevent AWS ssm rate limits by being within the max throughput limit
+      await delay(25);
     }
   }
 }

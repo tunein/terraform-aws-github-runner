@@ -39,6 +39,7 @@ resource "aws_lambda_function" "pool" {
       RUNNER_OWNER                         = var.config.runner.pool_owner
       SERVICE_NAME                         = "runners-pool"
       SSM_TOKEN_PATH                       = var.config.ssm_token_path
+      SSM_CONFIG_PATH                      = var.config.ssm_config_path
       SUBNET_IDS                           = join(",", var.config.subnet_ids)
     }
   }

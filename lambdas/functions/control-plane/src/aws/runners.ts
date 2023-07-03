@@ -116,24 +116,11 @@ function generateFleetOverrides(
   return result;
 }
 
-function removeTokenForLogging(config: string[]): string[] {
-  const result: string[] = [];
-  config.forEach((e) => {
-    if (e.startsWith('--token')) {
-      result.push('--token <REDACTED>');
-    } else {
-      result.push(e);
-    }
-  });
-  return result;
-}
-
-export async function createRunner(runnerParameters: Runners.RunnerInputParameters): Promise<void> {
+export async function createRunner(runnerParameters: Runners.RunnerInputParameters): Promise<string[]> {
   logger.debug('Runner configuration.', {
     runner: {
       configuration: {
         ...runnerParameters,
-        runnerServiceConfig: removeTokenForLogging(runnerParameters.runnerServiceConfig),
       },
     },
   });
@@ -233,22 +220,7 @@ export async function createRunner(runnerParameters: Runners.RunnerInputParamete
 
   logger.info(`Created instance(s): ${instances.join(',')}`);
 
-  const delay = async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  const ssmParameterStoreMaxThroughput = 40;
-  const isDelay = instances.length >= ssmParameterStoreMaxThroughput ? true : false;
-
-  for (const instance of instances) {
-    await putParameter(
-      `${runnerParameters.ssmTokenPath}/${instance}`,
-      runnerParameters.runnerServiceConfig.join(' '),
-      true,
-    );
-
-    if (isDelay) {
-      // Delay to prevent AWS ssm rate limits by being within the max throughput limit
-      await delay(25);
-    }
-  }
+  return instances;
 }
 
 // If launchTime is undefined, this will return false

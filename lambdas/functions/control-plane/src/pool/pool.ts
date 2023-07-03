@@ -18,12 +18,13 @@ interface RunnerStatus {
 
 export async function adjust(event: PoolEvent): Promise<void> {
   logger.info(`Checking current pool size against pool of size: ${event.poolSize}`);
-  const runnerExtraLabels = process.env.RUNNER_EXTRA_LABELS;
-  const runnerGroup = process.env.RUNNER_GROUP_NAME;
-  const runnerNamePrefix = process.env.RUNNER_NAME_PREFIX;
+  const runnerExtraLabels = process.env.RUNNER_EXTRA_LABELS || '';
+  const runnerGroup = process.env.RUNNER_GROUP_NAME || '';
+  const runnerNamePrefix = process.env.RUNNER_NAME_PREFIX || '';
   const environment = process.env.ENVIRONMENT;
   const ghesBaseUrl = process.env.GHES_URL;
   const ssmTokenPath = process.env.SSM_TOKEN_PATH;
+  const ssmConfigPath = process.env.SSM_CONFIG_PATH || '';
   const subnets = process.env.SUBNET_IDS.split(',');
   const instanceTypes = process.env.INSTANCE_TYPES.split(',');
   const instanceTargetTargetCapacityType = process.env.INSTANCE_TARGET_CAPACITY_TYPE;
@@ -45,13 +46,10 @@ export async function adjust(event: PoolEvent): Promise<void> {
   const githubInstallationClient = await createOctoClient(ghAuth.token, ghesApiUrl);
 
   // Look up the runners registered in GitHub, could be also non managed by this module.
-  const runners = await githubInstallationClient.paginate(
-    githubInstallationClient.actions.listSelfHostedRunnersForOrg,
-    {
-      org: runnerOwner,
-      per_page: 100,
-    },
-  );
+  const runners = await githubInstallationClient.paginate('GET /orgs/{org}/actions/runners', {
+    org: runnerOwner,
+    per_page: 100,
+  });
   const runnerStatus = new Map<string, RunnerStatus>();
   for (const runner of runners) {
     runner.name = runnerNamePrefix ? runner.name.replace(runnerNamePrefix, '') : runner.name;
@@ -97,8 +95,11 @@ export async function adjust(event: PoolEvent): Promise<void> {
         runnerExtraLabels,
         runnerGroup,
         runnerOwner,
+        runnerNamePrefix,
         runnerType: 'Org',
         disableAutoUpdate: disableAutoUpdate,
+        ssmTokenPath,
+        ssmConfigPath,
       },
       {
         ec2instanceCriteria: {
@@ -109,7 +110,6 @@ export async function adjust(event: PoolEvent): Promise<void> {
         },
         environment,
         launchTemplateName,
-        ssmTokenPath,
         subnets,
         numberOfRunners: topUp,
         amiIdSsmParameterName,

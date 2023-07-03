@@ -40,6 +40,7 @@ resource "aws_lambda_function" "scale_up" {
       RUNNERS_MAXIMUM_COUNT                = var.runners_maximum_count
       SERVICE_NAME                         = "runners-scale-up"
       SSM_TOKEN_PATH                       = "${var.ssm_paths.root}/${var.ssm_paths.tokens}"
+      SSM_CONFIG_PATH                      = "${var.ssm_paths.root}/${var.ssm_paths.config}"
       SUBNET_IDS                           = join(",", var.subnet_ids)
     }
   }
@@ -97,6 +98,7 @@ resource "aws_iam_role_policy" "scale_up" {
     sqs_arn                   = var.sqs_build_queue.arn
     github_app_id_arn         = var.github_app_parameters.id.arn
     github_app_key_base64_arn = var.github_app_parameters.key_base64.arn
+    ssm_config_path           = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_paths.root}/${var.ssm_paths.config}"
     kms_key_arn               = local.kms_key_arn
     ami_kms_key_arn           = local.ami_kms_key_arn
   })

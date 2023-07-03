@@ -78,11 +78,11 @@ async function listGitHubRunners(runner: RunnerInfo): Promise<GhRunners> {
   const client = await getOrCreateOctokit(runner);
   const runners =
     runner.type === 'Org'
-      ? await client.paginate(client.actions.listSelfHostedRunnersForOrg, {
+      ? await client.paginate('GET /orgs/{org}/actions/runners', {
           org: runner.owner,
           per_page: 100,
         })
-      : await client.paginate(client.actions.listSelfHostedRunnersForRepo, {
+      : await client.paginate('GET /repos/{owner}/{repo}/actions/runners', {
           owner: runner.owner.split('/')[0],
           repo: runner.owner.split('/')[1],
           per_page: 100,
