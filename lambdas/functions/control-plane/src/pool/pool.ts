@@ -46,7 +46,8 @@ export async function adjust(event: PoolEvent): Promise<void> {
   const githubInstallationClient = await createOctoClient(ghAuth.token, ghesApiUrl);
 
   // Look up the runners registered in GitHub, could be also non managed by this module.
-  const runners = await githubInstallationClient.paginate('GET /orgs/{org}/actions/runners', {
+  const runners = await githubInstallationClient.paginate(
+    githubInstallationClient.actions.listSelfHostedRunnersForOrg, {
     org: runnerOwner,
     per_page: 100,
   });
