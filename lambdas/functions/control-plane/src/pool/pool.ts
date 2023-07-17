@@ -47,10 +47,12 @@ export async function adjust(event: PoolEvent): Promise<void> {
 
   // Look up the runners registered in GitHub, could be also non managed by this module.
   const runners = await githubInstallationClient.paginate(
-    githubInstallationClient.actions.listSelfHostedRunnersForOrg, {
-    org: runnerOwner,
-    per_page: 100,
-  });
+    githubInstallationClient.actions.listSelfHostedRunnersForOrg,
+    {
+      org: runnerOwner,
+      per_page: 100,
+    },
+  );
   const runnerStatus = new Map<string, RunnerStatus>();
   for (const runner of runners) {
     runner.name = runnerNamePrefix ? runner.name.replace(runnerNamePrefix, '') : runner.name;
