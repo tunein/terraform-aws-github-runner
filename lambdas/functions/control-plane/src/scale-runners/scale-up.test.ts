@@ -333,7 +333,7 @@ describe('scaleUp with GHES', () => {
       expect(mockSSMClient).toHaveReceivedNthSpecificCommandWith(1, PutParameterCommand, {
         Name: '/github-action-runners/default/runners/config/i-12345',
         Value:
-          '--url https://github.enterprise.something/Codertocat --token <REDACTED> ' +
+          '--url https://github.enterprise.something/Codertocat --token 1234abcd ' +
           '--labels label1,label2 --runnergroup Default',
         Type: 'SecureString',
       });

@@ -325,9 +325,11 @@ async function createStartRunnerConfigForNonEphemeralRunners(
 ) {
   const { isDelay, delay } = addDelay(instances);
   const token = await getGithubRunnerRegistrationToken(githubRunnerConfig, ghClient);
-  let runnerServiceConfig = generateRunnerServiceConfig(githubRunnerConfig, token);
+  const runnerServiceConfig = generateRunnerServiceConfig(githubRunnerConfig, token);
 
-  runnerServiceConfig = removeTokenForLogging(runnerServiceConfig);
+  logger.debug('Runner service config for non-ephemeral runners', {
+    runner_service_config: removeTokenForLogging(runnerServiceConfig),
+  });
   logger.debug('Runner service config for non-ephemeral runners', { runner_service_config: runnerServiceConfig });
 
   for (const instance of instances) {
