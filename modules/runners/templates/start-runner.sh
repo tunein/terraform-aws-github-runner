@@ -109,7 +109,8 @@ if [[ $agent_mode = "ephemeral" ]]; then
 
 cat >/opt/start-runner-service.sh <<-EOF
   echo "Starting the runner in ephemeral mode"
-  sudo --preserve-env=RUNNER_ALLOW_RUNASROOT -- ./run.sh --jitconfig $${config}
+
+  sudo --preserve-env=RUNNER_ALLOW_RUNASROOT -u "$run_as" -- ./run.sh --jitconfig $${config}
   echo "Runner has finished"
 
   echo "Stopping cloudwatch service"
