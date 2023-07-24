@@ -4,13 +4,13 @@ import { mockClient } from 'aws-sdk-client-mock';
 import 'aws-sdk-client-mock-jest';
 import { mocked } from 'jest-mock';
 import nock from 'nock';
+import { performance } from 'perf_hooks';
 
 import * as ghAuth from '../gh-auth/gh-auth';
 import { createRunner, listEC2Runners } from './../aws/runners';
 import { RunnerInputParameters } from './../aws/runners.d';
 import ScaleError from './ScaleError';
 import * as scaleUpModule from './scale-up';
-import { performance } from 'perf_hooks';
 
 const mockOctokit = {
   paginate: jest.fn(),
