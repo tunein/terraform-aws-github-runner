@@ -339,7 +339,6 @@ async function createStartRunnerConfigForNonEphemeralRunners(
   logger.debug('Runner service config for non-ephemeral runners', {
     runner_service_config: removeTokenForLogging(runnerServiceConfig),
   });
-  logger.debug('Runner service config for non-ephemeral runners', { runner_service_config: runnerServiceConfig });
 
   for (const instance of instances) {
     await putParameter(`${githubRunnerConfig.ssmTokenPath}/${instance}`, runnerServiceConfig.join(' '), true);
