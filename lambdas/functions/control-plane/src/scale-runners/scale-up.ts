@@ -83,7 +83,7 @@ async function getGithubRunnerRegistrationToken(githubRunnerConfig: CreateGitHub
   return registrationToken.data.token;
 }
 
-function removeTokenForLogging(config: string[]): string[] {
+function removeTokenFromLogging(config: string[]): string[] {
   const result: string[] = [];
   config.forEach((e) => {
     if (e.startsWith('--token')) {
@@ -212,7 +212,7 @@ export async function scaleUp(eventSource: string, payload: ActionRequestMessage
   if (eventSource !== 'aws:sqs') throw Error('Cannot handle non-SQS events!');
   const enableOrgLevel = yn(process.env.ENABLE_ORGANIZATION_RUNNERS, { default: true });
   const maximumRunners = parseInt(process.env.RUNNERS_MAXIMUM_COUNT || '3');
-  const runnerLabels = process.env.RUNNER_LABELS || '';
+  const runnerLabels = process.env.RUNNER_LABELS;
   const runnerGroup = process.env.RUNNER_GROUP_NAME || 'Default';
   const environment = process.env.ENVIRONMENT;
   const ghesBaseUrl = process.env.GHES_URL;
@@ -337,7 +337,7 @@ async function createStartRunnerConfigForNonEphemeralRunners(
   const runnerServiceConfig = generateRunnerServiceConfig(githubRunnerConfig, token);
 
   logger.debug('Runner service config for non-ephemeral runners', {
-    runner_service_config: removeTokenForLogging(runnerServiceConfig),
+    runner_service_config: removeTokenFromLogging(runnerServiceConfig),
   });
 
   for (const instance of instances) {
@@ -383,9 +383,9 @@ async function createStartRunnerConfigForEphemeralRunners(
             runner_group_id: ephemeralRunnerConfig.runnerGroupId,
             labels: ephemeralRunnerConfig.runnerLabels,
           });
+
     // store jit config in ssm parameter store
-    logger.debug('Runner JIT config for ephemeral runner', {
-      runner_jit_config: runnerConfig.data.encoded_jit_config,
+    logger.debug('Runner JIT config for ephemeral runner generated.', {
       instance: instance,
     });
     await putParameter(`${githubRunnerConfig.ssmTokenPath}/${instance}`, runnerConfig.data.encoded_jit_config, true);
