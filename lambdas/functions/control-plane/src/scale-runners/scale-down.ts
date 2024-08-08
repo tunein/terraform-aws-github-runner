@@ -209,6 +209,7 @@ function newestFirstStrategy(a: RunnerInfo, b: RunnerInfo): number {
 async function listRunners(environment: string) {
   return await listEC2Runners({
     environment,
+    statuses: ['running', 'pending', 'terminated'],
   });
 }
 
