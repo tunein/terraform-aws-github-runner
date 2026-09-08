@@ -1,8 +1,12 @@
 locals {
+  scale_down_lambda_name = "${var.prefix}-scale-down"
   # Windows Runners can take their sweet time to do anything
+  # For an AWS vended AMI with an x86 Mac instance or an Apple silicon Mac instance,
+  # the launch time can range from approximately 6 minutes to 20 minutes. 
   min_runtime_defaults = {
     "windows" = 15
     "linux"   = 5
+    "osx"     = 20
   }
 }
 resource "aws_lambda_function" "scale_down" {
@@ -11,31 +15,37 @@ resource "aws_lambda_function" "scale_down" {
   s3_object_version = var.runners_lambda_s3_object_version != null ? var.runners_lambda_s3_object_version : null
   filename          = var.lambda_s3_bucket == null ? local.lambda_zip : null
   source_code_hash  = var.lambda_s3_bucket == null ? filebase64sha256(local.lambda_zip) : null
-  function_name     = "${var.prefix}-scale-down"
+  function_name     = local.scale_down_lambda_name
   role              = aws_iam_role.scale_down.arn
   handler           = "index.scaleDownHandler"
   runtime           = var.lambda_runtime
   timeout           = var.lambda_timeout_scale_down
-  tags              = local.tags
+  tags              = merge(local.tags, var.lambda_tags)
   memory_size       = var.lambda_scale_down_memory_size
   architectures     = [var.lambda_architecture]
+  depends_on        = [aws_cloudwatch_log_group.scale_down]
 
   environment {
     variables = {
-      ENVIRONMENT                              = var.prefix
-      GHES_URL                                 = var.ghes_url
-      LOG_LEVEL                                = var.log_level
-      MINIMUM_RUNNING_TIME_IN_MINUTES          = coalesce(var.minimum_running_time_in_minutes, local.min_runtime_defaults[var.runner_os])
-      NODE_TLS_REJECT_UNAUTHORIZED             = var.ghes_url != null && !var.ghes_ssl_verify ? 0 : 1
-      PARAMETER_GITHUB_APP_ID_NAME             = var.github_app_parameters.id.name
-      PARAMETER_GITHUB_APP_KEY_BASE64_NAME     = var.github_app_parameters.key_base64.name
-      POWERTOOLS_LOGGER_LOG_EVENT              = var.log_level == "debug" ? "true" : "false"
-      RUNNER_BOOT_TIME_IN_MINUTES              = var.runner_boot_time_in_minutes
-      SCALE_DOWN_CONFIG                        = jsonencode(var.idle_config)
-      POWERTOOLS_SERVICE_NAME                  = "runners-scale-down"
-      POWERTOOLS_TRACE_ENABLED                 = var.tracing_config.mode != null ? true : false
-      POWERTOOLS_TRACER_CAPTURE_HTTPS_REQUESTS = var.tracing_config.capture_http_requests
-      POWERTOOLS_TRACER_CAPTURE_ERROR          = var.tracing_config.capture_error
+      ENVIRONMENT                               = var.prefix
+      ENABLE_METRIC_GITHUB_APP_RATE_LIMIT       = var.metrics.enable && var.metrics.metric.enable_github_app_rate_limit
+      GHES_URL                                  = var.ghes_url
+      USER_AGENT                                = var.user_agent
+      LOG_LEVEL                                 = upper(var.log_level)
+      MINIMUM_RUNNING_TIME_IN_MINUTES           = coalesce(var.minimum_running_time_in_minutes, local.min_runtime_defaults[var.runner_os])
+      NODE_TLS_REJECT_UNAUTHORIZED              = var.ghes_url != null && !var.ghes_ssl_verify ? 0 : 1
+      PARAMETER_GITHUB_APP_ID_NAME              = join(":", [for p in var.github_app_parameters.id : p.name])
+      PARAMETER_GITHUB_APP_KEY_BASE64_NAME      = join(":", [for p in var.github_app_parameters.key_base64 : p.name])
+      PARAMETER_GITHUB_APP_INSTALLATION_ID_NAME = join(":", [for p in var.github_app_parameters.installation_id : p != null ? p.name : ""])
+      POWERTOOLS_LOGGER_LOG_EVENT               = var.log_level == "debug" ? "true" : "false"
+      RUNNER_BOOT_TIME_IN_MINUTES               = var.runner_boot_time_in_minutes
+      SCALE_DOWN_CONFIG                         = jsonencode(var.idle_config)
+      POWERTOOLS_SERVICE_NAME                   = "${var.prefix}-scale-down"
+      POWERTOOLS_METRICS_NAMESPACE              = var.metrics.namespace
+      POWERTOOLS_TRACE_ENABLED                  = var.tracing_config.mode != null ? true : false
+      POWERTOOLS_TRACER_CAPTURE_HTTPS_REQUESTS  = var.tracing_config.capture_http_requests
+      POWERTOOLS_TRACER_CAPTURE_ERROR           = var.tracing_config.capture_error
+      COMPUTE_PROVIDER_TYPE                     = "ec2"
     }
   }
 
@@ -56,9 +66,10 @@ resource "aws_lambda_function" "scale_down" {
 }
 
 resource "aws_cloudwatch_log_group" "scale_down" {
-  name              = "/aws/lambda/${aws_lambda_function.scale_down.function_name}"
+  name              = "/aws/lambda/${local.scale_down_lambda_name}"
   retention_in_days = var.logging_retention_in_days
   kms_key_id        = var.logging_kms_key_id
+  log_group_class   = var.log_class
   tags              = var.tags
 }
 
@@ -82,7 +93,7 @@ resource "aws_lambda_permission" "scale_down" {
 }
 
 resource "aws_iam_role" "scale_down" {
-  name                 = "${var.prefix}-action-scale-down-lambda-role"
+  name                 = "${substr("${var.prefix}-scale-down-lambda", 0, 54)}-${substr(md5("${var.prefix}-scale-down-lambda"), 0, 8)}"
   assume_role_policy   = data.aws_iam_policy_document.lambda_assume_role_policy.json
   path                 = local.role_path
   permissions_boundary = var.role_permissions_boundary
@@ -90,17 +101,21 @@ resource "aws_iam_role" "scale_down" {
 }
 
 resource "aws_iam_role_policy" "scale_down" {
-  name = "${var.prefix}-lambda-scale-down-policy"
+  name = "scale-down-policy"
   role = aws_iam_role.scale_down.name
   policy = templatefile("${path.module}/policies/lambda-scale-down.json", {
-    github_app_id_arn         = var.github_app_parameters.id.arn
-    github_app_key_base64_arn = var.github_app_parameters.key_base64.arn
-    kms_key_arn               = local.kms_key_arn
+    environment = var.prefix
+    github_app_parameter_arns = jsonencode(concat(
+      [for p in var.github_app_parameters.id : p.arn],
+      [for p in var.github_app_parameters.key_base64 : p.arn],
+      [for p in var.github_app_parameters.installation_id : p.arn if p != null],
+    ))
+    kms_key_arn = local.kms_key_arn
   })
 }
 
 resource "aws_iam_role_policy" "scale_down_logging" {
-  name = "${var.prefix}-lambda-logging"
+  name = "logging-policy"
   role = aws_iam_role.scale_down.name
   policy = templatefile("${path.module}/policies/lambda-cloudwatch.json", {
     log_group_arn = aws_cloudwatch_log_group.scale_down.arn
@@ -115,6 +130,7 @@ resource "aws_iam_role_policy_attachment" "scale_down_vpc_execution_role" {
 
 resource "aws_iam_role_policy" "scale_down_xray" {
   count  = var.tracing_config.mode != null ? 1 : 0
+  name   = "xray-policy"
   policy = data.aws_iam_policy_document.lambda_xray[0].json
   role   = aws_iam_role.scale_down.name
 }

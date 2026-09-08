@@ -1,5 +1,6 @@
 locals {
-  role_path = var.lambda.role_path == null ? "/${var.lambda.prefix}/" : var.lambda.role_path
+  lambda_name = "${var.lambda.prefix}-${var.lambda.name}"
+  role_path   = var.lambda.role_path == null ? "/${var.lambda.prefix}/" : var.lambda.role_path
 
   lambda_environment_variables = {
     ENVIRONMENT                              = var.lambda.prefix
@@ -22,13 +23,14 @@ resource "aws_lambda_function" "main" {
   s3_object_version = var.lambda.s3_object_version != null ? var.lambda.s3_object_version : null
   filename          = var.lambda.s3_bucket == null ? var.lambda.zip : null
   source_code_hash  = var.lambda.s3_bucket == null ? filebase64sha256(var.lambda.zip) : null
-  function_name     = "${var.lambda.prefix}-${var.lambda.name}"
+  function_name     = local.lambda_name
   role              = aws_iam_role.main.arn
   handler           = var.lambda.handler
   runtime           = var.lambda.runtime
   timeout           = var.lambda.timeout
   memory_size       = var.lambda.memory_size
   architectures     = [var.lambda.architecture]
+  depends_on        = [aws_cloudwatch_log_group.main]
 
   environment {
     variables = local.environment_variable
@@ -42,7 +44,7 @@ resource "aws_lambda_function" "main" {
     }
   }
 
-  tags = var.lambda.tags
+  tags = merge(var.lambda.tags, var.lambda.lambda_tags)
 
   dynamic "tracing_config" {
     for_each = var.lambda.tracing_config.mode != null ? [true] : []
@@ -53,14 +55,15 @@ resource "aws_lambda_function" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "main" {
-  name              = "/aws/lambda/${aws_lambda_function.main.function_name}"
+  name              = "/aws/lambda/${local.lambda_name}"
   retention_in_days = var.lambda.logging_retention_in_days
   kms_key_id        = var.lambda.logging_kms_key_id
+  log_group_class   = var.lambda.log_class
   tags              = var.lambda.tags
 }
 
 resource "aws_iam_role" "main" {
-  name                 = "${var.lambda.prefix}-${var.lambda.name}"
+  name                 = "${substr("${var.lambda.prefix}-${var.lambda.name}", 0, 54)}-${substr(md5("${var.lambda.prefix}-${var.lambda.name}"), 0, 8)}"
   assume_role_policy   = data.aws_iam_policy_document.lambda_assume_role_policy.json
   path                 = local.role_path
   permissions_boundary = var.lambda.role_permissions_boundary
